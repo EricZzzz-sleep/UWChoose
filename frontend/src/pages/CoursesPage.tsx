@@ -10,6 +10,7 @@ import { useStudentStore } from '../stores/useStudentStore'
 
 const levels = ['All', '100', '200', '300', '400']
 const statuses = ['All', 'Eligible', 'Blocked', 'Covered', 'Completed', 'Planned', 'Override']
+const coursesPerPage = 20
 
 export function CoursesPage() {
   const { courses } = useCatalog()
@@ -18,6 +19,7 @@ export function CoursesPage() {
   const [subject, setSubject] = useState('All')
   const [level, setLevel] = useState('All')
   const [status, setStatus] = useState('All')
+  const [page, setPage] = useState(1)
   const completedCourses = useStudentStore((state) => state.completedCourses)
   const plannedTerms = useStudentStore((state) => state.plannedTerms)
   const prerequisiteOverrides = useStudentStore((state) => state.prerequisiteOverrides)
@@ -85,6 +87,17 @@ export function CoursesPage() {
     })
   }, [availabilityByCode, completedCodes, courses, level, plannedCodes, query, status, subject])
 
+  const totalPages = Math.max(1, Math.ceil(filteredCourses.length / coursesPerPage))
+  const currentPage = Math.min(page, totalPages)
+  const visibleCourses = useMemo(() => {
+    const startIndex = (currentPage - 1) * coursesPerPage
+
+    return filteredCourses.slice(startIndex, startIndex + coursesPerPage)
+  }, [currentPage, filteredCourses])
+  const firstVisibleCourse =
+    filteredCourses.length === 0 ? 0 : (currentPage - 1) * coursesPerPage + 1
+  const lastVisibleCourse = Math.min(currentPage * coursesPerPage, filteredCourses.length)
+
   return (
     <div className="space-y-6">
       <div>
@@ -97,12 +110,18 @@ export function CoursesPage() {
           className="h-11 rounded-xl border border-slate-300 px-3 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100"
           placeholder="Search by code or name"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            setQuery(event.target.value)
+            setPage(1)
+          }}
         />
         <select
           className="h-11 rounded-xl border border-slate-300 px-3"
           value={subject}
-          onChange={(event) => setSubject(event.target.value)}
+          onChange={(event) => {
+            setSubject(event.target.value)
+            setPage(1)
+          }}
         >
           {subjects.map((item) => (
             <option key={item}>{item}</option>
@@ -111,7 +130,10 @@ export function CoursesPage() {
         <select
           className="h-11 rounded-xl border border-slate-300 px-3"
           value={level}
-          onChange={(event) => setLevel(event.target.value)}
+          onChange={(event) => {
+            setLevel(event.target.value)
+            setPage(1)
+          }}
         >
           {levels.map((item) => (
             <option key={item}>{item}</option>
@@ -120,7 +142,10 @@ export function CoursesPage() {
         <select
           className="h-11 rounded-xl border border-slate-300 px-3"
           value={status}
-          onChange={(event) => setStatus(event.target.value)}
+          onChange={(event) => {
+            setStatus(event.target.value)
+            setPage(1)
+          }}
         >
           {statuses.map((item) => (
             <option key={item}>{item}</option>
@@ -129,7 +154,9 @@ export function CoursesPage() {
       </div>
 
       <div className="flex items-center justify-between text-sm text-slate-600">
-        <span>{filteredCourses.length} courses</span>
+        <span>
+          Showing {firstVisibleCourse}-{lastVisibleCourse} of {filteredCourses.length} courses
+        </span>
       </div>
 
       {filteredCourses.length === 0 ? (
@@ -137,36 +164,64 @@ export function CoursesPage() {
           No courses match your search.
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2">
-          {filteredCourses.map((course) => (
-            (() => {
-              const availability = availabilityByCode.get(course.code)
-              const isCovered = availability?.reasons.some(
-                (reason) => reason.includes('already') || reason.includes('antirequisite'),
-              )
-              const cardStatus = completedCodes.has(course.code)
-                ? 'completed'
-                : plannedCodes.has(course.code)
-                  ? 'planned'
-                : availability?.hasPrerequisiteOverride && availability.canTake
-                  ? 'override'
-                : availability?.canTake
-                  ? 'eligible'
-                  : isCovered
-                    ? 'covered'
-                    : 'blocked'
+        <>
+          <div className="grid gap-4 md:grid-cols-2">
+            {visibleCourses.map((course) => (
+              (() => {
+                const availability = availabilityByCode.get(course.code)
+                const isCovered = availability?.reasons.some(
+                  (reason) => reason.includes('already') || reason.includes('antirequisite'),
+                )
+                const cardStatus = completedCodes.has(course.code)
+                  ? 'completed'
+                  : plannedCodes.has(course.code)
+                    ? 'planned'
+                  : availability?.hasPrerequisiteOverride && availability.canTake
+                    ? 'override'
+                  : availability?.canTake
+                    ? 'eligible'
+                    : isCovered
+                      ? 'covered'
+                      : 'blocked'
 
-              return (
-                <CourseCard
-                  course={course}
-                  key={course.code}
-                  reasons={availability?.canTake ? [] : availability?.reasons}
-                  status={cardStatus}
-                />
-              )
-            })()
-          ))}
-        </div>
+                return (
+                  <CourseCard
+                    course={course}
+                    key={course.code}
+                    reasons={availability?.canTake ? [] : availability?.reasons}
+                    status={cardStatus}
+                  />
+                )
+              })()
+            ))}
+          </div>
+
+          {totalPages > 1 ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 text-sm text-slate-600">
+              <span>
+                Page {currentPage} of {totalPages}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  className="h-10 rounded-xl border border-slate-300 bg-white px-4 font-medium text-slate-700 transition hover:border-emerald-500 hover:text-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={currentPage === 1}
+                  onClick={() => setPage((currentPage) => Math.max(1, currentPage - 1))}
+                  type="button"
+                >
+                  Previous
+                </button>
+                <button
+                  className="h-10 rounded-xl border border-slate-300 bg-white px-4 font-medium text-slate-700 transition hover:border-emerald-500 hover:text-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  disabled={currentPage === totalPages}
+                  onClick={() => setPage((currentPage) => Math.min(totalPages, currentPage + 1))}
+                  type="button"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   )

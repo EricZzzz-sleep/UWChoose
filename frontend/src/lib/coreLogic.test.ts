@@ -212,7 +212,8 @@ describe('course graph', () => {
 
     expect(graphCodes).toContain('PMATH450')
     expect(graphCodes).toContain('PMATH351')
-    expect(graphCodes).toContain('MATH138')
+    expect(graphCodes).toContain('MATH247')
+    expect(graphCodes).toContain('PMATH333')
     expect(graphCodes).not.toContain('PMATH451')
   })
 
@@ -220,10 +221,10 @@ describe('course graph', () => {
     const graph = buildCourseFlowGraph('PMATH351', courses)
     const graphCodes = graph.nodes.map((node) => node.code)
 
-    expect(graphCodes).toContain('MATH138')
+    expect(graphCodes).toContain('MATH247')
+    expect(graphCodes).toContain('PMATH333')
     expect(graphCodes).toContain('PMATH351')
     expect(graphCodes).toContain('PMATH450')
-    expect(graphCodes).toContain('PMATH451')
     expect(graphCodes).not.toContain('PMATH347')
   })
 
@@ -233,10 +234,11 @@ describe('course graph', () => {
 
     expect(graphCodes).toContain('MATH137')
     expect(graphCodes).toContain('MATH138')
-    expect(graphCodes).toContain('PMATH351')
+    expect(graphCodes).toContain('MATH237')
     expect(graphCodes).toContain('STAT230')
+    expect(graphCodes).toContain('STAT231')
+    expect(graphCodes).not.toContain('PMATH351')
     expect(graphCodes).not.toContain('PMATH450')
-    expect(graphCodes).not.toContain('STAT231')
     expect(graphCodes).not.toContain('STAT331')
     expect(graphCodes).not.toContain('MATH135')
   })
@@ -256,15 +258,15 @@ describe('course graph', () => {
     const prerequisiteCodes = getRecursivePrerequisiteCodes('PMATH450', courses)
 
     expect(prerequisiteCodes).toContain('PMATH351')
-    expect(prerequisiteCodes).toContain('MATH138')
-    expect(prerequisiteCodes).toContain('MATH137')
+    expect(prerequisiteCodes).toContain('MATH247')
+    expect(prerequisiteCodes).toContain('PMATH333')
   })
 
   it('finds recursive dependent courses unlocked by a selected course', () => {
     const dependentCodes = getRecursiveDependentCodes('MATH138', courses)
 
-    expect(dependentCodes).toContain('PMATH351')
-    expect(dependentCodes).toContain('PMATH450')
+    expect(dependentCodes).toContain('MATH237')
     expect(dependentCodes).toContain('STAT331')
+    expect(dependentCodes).not.toContain('PMATH351')
   })
 })
