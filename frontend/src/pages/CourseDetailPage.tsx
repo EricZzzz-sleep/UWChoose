@@ -193,6 +193,11 @@ export function CourseDetailPage() {
                 <p className="text-slate-600">None listed.</p>
               )}
             </div>
+            {course.antirequisiteRawText ? (
+              <p className="mt-5 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">
+                Raw text: {course.antirequisiteRawText}
+              </p>
+            ) : null}
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">

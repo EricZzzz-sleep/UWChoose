@@ -8,6 +8,7 @@ export type Course = {
   description?: string
   prerequisiteRawText?: string
   prerequisite?: Prerequisite
+  antirequisiteRawText?: string
   antirequisites?: string[]
   termsOffered?: Term[]
 }
@@ -16,6 +17,7 @@ export type Prerequisite =
   | CourseRequirement
   | AllOfRequirement
   | AnyOfRequirement
+  | ChooseNRequirement
 
 export type CourseRequirement = {
   type: 'course'
@@ -30,5 +32,11 @@ export type AllOfRequirement = {
 
 export type AnyOfRequirement = {
   type: 'anyOf'
+  requirements: Prerequisite[]
+}
+
+export type ChooseNRequirement = {
+  type: 'chooseN'
+  requiredCount: number
   requirements: Prerequisite[]
 }

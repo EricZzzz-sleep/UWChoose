@@ -45,6 +45,14 @@ export function satisfiesPrerequisite(
     )
   }
 
+  if (prerequisite.type === 'chooseN') {
+    return (
+      prerequisite.requirements.filter((requirement) =>
+        satisfiesPrerequisite(requirement, completedCourses),
+      ).length >= prerequisite.requiredCount
+    )
+  }
+
   return prerequisite.requirements.some((requirement) =>
     satisfiesPrerequisite(requirement, completedCourses),
   )
@@ -104,6 +112,18 @@ function getUnsatisfiedReason(
     return prerequisite.requirements.flatMap((requirement) =>
       getUnsatisfiedReason(requirement, completedCourses),
     )
+  }
+
+  if (prerequisite.type === 'chooseN') {
+    const completedCount = prerequisite.requirements.filter((requirement) =>
+      satisfiesPrerequisite(requirement, completedCourses),
+    ).length
+    const remainingCount = Math.max(1, prerequisite.requiredCount - completedCount)
+    const options = prerequisite.requirements
+      .filter((requirement) => !satisfiesPrerequisite(requirement, completedCourses))
+      .map(summarizeRequirement)
+
+    return [`Need ${remainingCount} of ${options.join(', or ')}.`]
   }
 
   return [`Need one of ${prerequisite.requirements.map(summarizeRequirement).join(', or ')}.`]

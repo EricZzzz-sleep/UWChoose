@@ -42,10 +42,6 @@ function validatePrerequisite(
   }
 
   if (prerequisite.type === 'course') {
-    if (!courseCodes.has(prerequisite.courseCode)) {
-      errors.push(`${ownerCourseCode}: prerequisite ${prerequisite.courseCode} at ${path} does not exist.`)
-    }
-
     if (prerequisite.courseCode === ownerCourseCode) {
       errors.push(`${ownerCourseCode}: course lists itself as a prerequisite at ${path}.`)
     }
@@ -55,6 +51,13 @@ function validatePrerequisite(
 
   if (prerequisite.requirements.length === 0) {
     errors.push(`${ownerCourseCode}: empty prerequisite group at ${path}.`)
+  }
+
+  if (
+    prerequisite.type === 'chooseN' &&
+    (prerequisite.requiredCount < 1 || prerequisite.requiredCount > prerequisite.requirements.length)
+  ) {
+    errors.push(`${ownerCourseCode}: invalid chooseN count at ${path}.`)
   }
 
   const directCourseCodes = prerequisite.requirements
@@ -90,10 +93,6 @@ export function validateCatalog(courses: Course[], programs: Program[]): string[
     })
 
     course.antirequisites?.forEach((antirequisite) => {
-      if (!courseCodes.has(antirequisite)) {
-        errors.push(`${course.code}: antirequisite ${antirequisite} does not exist.`)
-      }
-
       if (antirequisite === course.code) {
         errors.push(`${course.code}: course lists itself as an antirequisite.`)
       }

@@ -1,14 +1,16 @@
 import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import * as cheerio from 'cheerio'
+import type { Element } from 'domhandler'
 import { degrees } from '../src/data/programs'
-import type { Course } from '../src/types/course'
+import type { Course, Prerequisite } from '../src/types/course'
 import type { Program, ProgramCategory, ProgramRequirement } from '../src/types/program'
 
 const catalogId = '67e557ed6ed2fe2bd3a38956'
 const catalogBaseUrl = 'https://uwaterloocm.kuali.co/api/v1/catalog'
 const catalogPageUrl = 'https://uwaterloo.ca/academic-calendar/undergraduate-studies/catalog'
 const mathFacultyName = 'Faculty of Mathematics'
+const targetCourseSubjects = new Set(['AMATH', 'CO', 'CS', 'MATH'])
 
 type KualiProgramSummary = {
   id: string
@@ -30,7 +32,17 @@ type KualiProgramDetail = KualiProgramSummary & {
   specializationIsAvailableForStudentsInTheFollowingMajorsRules?: string
 }
 
+type KualiCourseSummary = {
+  __catalogCourseId: string
+  id: string
+  title: string
+  subjectCode?: {
+    name?: string
+  }
+}
+
 type KualiCourseDetail = {
+  antirequisites?: string
   description?: string
   prerequisites?: string
   subjectCode?: {
@@ -198,7 +210,73 @@ function getRequirementType(text: string): Pick<ProgramRequirement, 'requiredCou
   }
 }
 
-function parseCourseLinksFromNode($: cheerio.CheerioAPI, node: cheerio.Element): CourseLink[] {
+function getCourseRequirementType(
+  text: string,
+  requirements: Prerequisite[],
+): Prerequisite | undefined {
+  if (requirements.length === 0) {
+    return undefined
+  }
+
+  if (requirements.length === 1) {
+    return requirements[0]
+  }
+
+  const requiredCount = getRequiredCount(text)
+
+  if (requiredCount && requiredCount > 1) {
+    return {
+      type: 'chooseN',
+      requiredCount: Math.min(requiredCount, requirements.length),
+      requirements,
+    }
+  }
+
+  if (requiredCount === 1 || /one\s+of|any\s+of|at\s+least\s+1/i.test(text)) {
+    return {
+      type: 'anyOf',
+      requirements,
+    }
+  }
+
+  return {
+    type: 'allOf',
+    requirements,
+  }
+}
+
+function simplifyRequirement(requirement: Prerequisite | undefined): Prerequisite | undefined {
+  if (!requirement || requirement.type === 'course') {
+    return requirement
+  }
+
+  const requirements = requirement.requirements
+    .map(simplifyRequirement)
+    .filter((item): item is Prerequisite => Boolean(item))
+
+  if (requirements.length === 0) {
+    return undefined
+  }
+
+  if (requirements.length === 1) {
+    return requirements[0]
+  }
+
+  if (requirement.type === 'chooseN') {
+    return {
+      ...requirement,
+      requiredCount: Math.min(requirement.requiredCount, requirements.length),
+      requirements,
+    }
+  }
+
+  return {
+    ...requirement,
+    requirements,
+  }
+}
+
+function parseCourseLinksFromNode($: cheerio.CheerioAPI, node: Element): CourseLink[] {
   const links = new Map<string, CourseLink>()
 
   $(node)
@@ -226,6 +304,138 @@ function parseCourseLinksFromNode($: cheerio.CheerioAPI, node: cheerio.Element):
     })
 
   return [...links.values()]
+}
+
+function getCourseLinksFromHtml(value: string | undefined): CourseLink[] {
+  if (!value) {
+    return []
+  }
+
+  const $ = cheerio.load(value)
+  const links = new Map<string, CourseLink>()
+
+  $('a[href*="#/courses/view/"]').each((_, link) => {
+    const href = $(link).attr('href') ?? ''
+    const courseId = href.match(/courses\/view\/([a-f0-9]+)/i)?.[1]
+    const code = normalizeCourseCode($(link).text())
+    const name = $(link)
+      .parent()
+      .text()
+      .replace(/\([^)]*\)/g, ' ')
+      .replace(code, ' ')
+      .replace(/\s+-\s+/, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (courseId && code) {
+      links.set(code, { code, courseId, name })
+    }
+  })
+
+  return [...links.values()]
+}
+
+function getCourseCodesFromHtml(value: string | undefined): string[] | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  const codes = new Set(getCourseLinksFromHtml(value).map((link) => link.code))
+  const rawText = stripHtml(value) ?? ''
+
+  rawText.match(/\b[A-Z]{2,8}\s*\d{2,3}[A-Z]?\b/g)?.forEach((code) => {
+    codes.add(normalizeCourseCode(code))
+  })
+
+  return codes.size > 0 ? [...codes].sort() : undefined
+}
+
+function getMinimumGrade(text: string): number | undefined {
+  return Number(text.match(/minimum grade of\s+(\d+)%/i)?.[1]) || undefined
+}
+
+function getDirectChildRequirements(
+  $: cheerio.CheerioAPI,
+  node: cheerio.Cheerio<Element>,
+): Prerequisite[] {
+  return node
+    .children('li, div, ul')
+    .toArray()
+    .map((child) => parseRequirementElement($, child))
+    .filter((item): item is Prerequisite => Boolean(item))
+}
+
+function parseLeafRequirement($: cheerio.CheerioAPI, node: cheerio.Cheerio<Element>) {
+  const result = node.children('div[data-test$="-result"]').first()
+  const resultNode = result.get(0)
+
+  if (!resultNode) {
+    return undefined
+  }
+
+  const links = parseCourseLinksFromNode($, resultNode)
+
+  if (links.length === 0) {
+    return undefined
+  }
+
+  const text = result.text().replace(/\s+/g, ' ').trim()
+  const minGrade = getMinimumGrade(text)
+  const requirements: Prerequisite[] = links.map((link) => ({
+    type: 'course',
+    courseCode: link.code,
+    ...(minGrade === undefined ? {} : { minGrade }),
+  }))
+
+  return getCourseRequirementType(text, requirements)
+}
+
+function parseRequirementElement(
+  $: cheerio.CheerioAPI,
+  element: Element,
+): Prerequisite | undefined {
+  const node = $(element)
+
+  if ((node.attr('data-test') ?? '').startsWith('ruleView-')) {
+    return parseLeafRequirement($, node)
+  }
+
+  const groupLabel = node.children('span').first().text().replace(/\s+/g, ' ').trim()
+
+  if (/Complete\s+(all|\d+)/i.test(groupLabel)) {
+    const childRequirements = node
+      .children('ul')
+      .first()
+      .children('li, div, ul')
+      .toArray()
+      .map((child) => parseRequirementElement($, child))
+      .filter((item): item is Prerequisite => Boolean(item))
+
+    return simplifyRequirement(getCourseRequirementType(groupLabel, childRequirements))
+  }
+
+  return simplifyRequirement({
+    type: 'allOf',
+    requirements: getDirectChildRequirements($, node),
+  })
+}
+
+function parsePrerequisiteHtml(value: string | undefined): Prerequisite | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  const $ = cheerio.load(value)
+  const requirements = $('body')
+    .children()
+    .toArray()
+    .map((node) => parseRequirementElement($, node as Element))
+    .filter((item): item is Prerequisite => Boolean(item))
+
+  return simplifyRequirement({
+    type: 'allOf',
+    requirements,
+  })
 }
 
 function parseProgramCodes(value: string | undefined): string[] | undefined {
@@ -313,6 +523,10 @@ function buildProgram(
 }
 
 function buildCourseFromLink(link: CourseLink, detail?: KualiCourseDetail): Course {
+  const antirequisites = getCourseCodesFromHtml(detail?.antirequisites)?.filter(
+    (courseCode) => courseCode !== link.code,
+  )
+
   return {
     code: link.code,
     name: detail?.title ?? link.name,
@@ -320,6 +534,9 @@ function buildCourseFromLink(link: CourseLink, detail?: KualiCourseDetail): Cour
     level: getCourseLevel(link.code),
     description: detail?.description,
     prerequisiteRawText: stripHtml(detail?.prerequisites),
+    prerequisite: parsePrerequisiteHtml(detail?.prerequisites),
+    antirequisiteRawText: stripHtml(detail?.antirequisites),
+    antirequisites: antirequisites && antirequisites.length > 0 ? antirequisites : undefined,
   }
 }
 
@@ -331,6 +548,7 @@ function formatTsValue(value: unknown): string {
 
 async function main() {
   const summaries = await fetchJson<KualiProgramSummary[]>(`${catalogBaseUrl}/programs/${catalogId}`)
+  const courseSummaries = await fetchJson<KualiCourseSummary[]>(`${catalogBaseUrl}/courses/${catalogId}`)
   const details = await Promise.all(
     summaries.map((summary) =>
       fetchJson<KualiProgramDetail>(`${catalogBaseUrl}/program/${catalogId}/${summary.pid}`),
@@ -347,12 +565,22 @@ async function main() {
 
     return buildProgram(program, courseLinksByCode, id)
   })
-  const requiredCourseLinks = [...courseLinksByCode.values()].sort((left, right) =>
+  courseSummaries
+    .filter((course) => targetCourseSubjects.has(course.subjectCode?.name ?? ''))
+    .forEach((course) => {
+      courseLinksByCode.set(course.__catalogCourseId, {
+        code: course.__catalogCourseId,
+        courseId: course.id,
+        name: course.title,
+      })
+    })
+
+  const catalogCourseLinks = [...courseLinksByCode.values()].sort((left, right) =>
     left.code.localeCompare(right.code),
   )
   const courseDetails = new Map<string, KualiCourseDetail>()
 
-  await mapWithConcurrency(requiredCourseLinks, 12, async (link) => {
+  await mapWithConcurrency(catalogCourseLinks, 12, async (link) => {
     try {
       courseDetails.set(
         link.code,
@@ -363,7 +591,7 @@ async function main() {
     }
   })
 
-  const courses = requiredCourseLinks.map((link) => buildCourseFromLink(link, courseDetails.get(link.code)))
+  const courses = catalogCourseLinks.map((link) => buildCourseFromLink(link, courseDetails.get(link.code)))
 
   const programsSource = `import type { Degree, Program } from "../types/program";
 
@@ -381,7 +609,7 @@ export const courses: Course[] = ${formatTsValue(courses)};
   await writeFile(resolve('src/data/courses.ts'), coursesSource)
 
   console.log(`Imported ${programs.length} Faculty of Mathematics programs.`)
-  console.log(`Imported ${courses.length} explicitly required courses.`)
+  console.log(`Imported ${courses.length} required and target-subject courses.`)
 }
 
 await main()

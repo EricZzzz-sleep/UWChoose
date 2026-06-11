@@ -35,15 +35,22 @@ function validatePrerequisite(
   }
 
   if (prerequisite.type === 'course') {
-    if (!courseCodes.has(prerequisite.courseCode)) {
-      addError(`${ownerCourseCode}: prerequisite ${prerequisite.courseCode} at ${path} does not exist.`)
-    }
-
     if (prerequisite.courseCode === ownerCourseCode) {
       addError(`${ownerCourseCode}: course lists itself as a prerequisite at ${path}.`)
     }
 
     return
+  }
+
+  if (prerequisite.requirements.length === 0) {
+    addError(`${ownerCourseCode}: empty prerequisite group at ${path}.`)
+  }
+
+  if (
+    prerequisite.type === 'chooseN' &&
+    (prerequisite.requiredCount < 1 || prerequisite.requiredCount > prerequisite.requirements.length)
+  ) {
+    addError(`${ownerCourseCode}: invalid chooseN count at ${path}.`)
   }
 
   const directCourseCodes = prerequisite.requirements
@@ -81,10 +88,6 @@ courses.forEach((course) => {
   })
 
   course.antirequisites?.forEach((antirequisite) => {
-    if (!courseCodes.has(antirequisite)) {
-      addError(`${course.code}: antirequisite ${antirequisite} does not exist.`)
-    }
-
     if (antirequisite === course.code) {
       addError(`${course.code}: course lists itself as an antirequisite.`)
     }

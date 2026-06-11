@@ -14,7 +14,15 @@ function requirementLabel(prerequisite: Prerequisite): string {
     return `${formatCourseCode(prerequisite.courseCode)}${gradeLabel}`
   }
 
-  return prerequisite.type === 'allOf' ? 'All of:' : 'One of:'
+  if (prerequisite.type === 'allOf') {
+    return 'All of:'
+  }
+
+  if (prerequisite.type === 'chooseN') {
+    return `Choose ${prerequisite.requiredCount} of:`
+  }
+
+  return 'One of:'
 }
 
 function TreeNode({ prerequisite }: { prerequisite: Prerequisite }) {

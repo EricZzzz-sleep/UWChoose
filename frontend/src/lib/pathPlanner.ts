@@ -67,6 +67,20 @@ function getMissingDirectRequirements(
     )
   }
 
+  if (prerequisite.type === 'chooseN') {
+    const completedCount = prerequisite.requirements.filter((requirement) =>
+      satisfiesPrerequisite(requirement, completedCourses),
+    ).length
+    const remainingCount = Math.max(0, prerequisite.requiredCount - completedCount)
+
+    return prerequisite.requirements
+      .filter((requirement) => !satisfiesPrerequisite(requirement, completedCourses))
+      .map((requirement) => getMissingDirectRequirements(requirement, completedCourses))
+      .sort((left, right) => left.length - right.length)
+      .slice(0, remainingCount)
+      .flat()
+  }
+
   const options = prerequisite.requirements
     .map((requirement) => getMissingDirectRequirements(requirement, completedCourses))
     .sort((left, right) => left.length - right.length)
@@ -108,6 +122,15 @@ function buildRequirementSteps(
     return prerequisite.requirements.flatMap((requirement) =>
       buildRequirementSteps(requirement, completedCourses),
     )
+  }
+
+  if (prerequisite.type === 'chooseN') {
+    return [
+      {
+        title: `Take ${prerequisite.requiredCount} of:`,
+        options: prerequisite.requirements.flatMap(summarizeOptions),
+      },
+    ]
   }
 
   return [
