@@ -16,7 +16,7 @@ import {
   maxMajorSelections,
   maxSingleProgramSelections,
 } from '../lib/programSelection'
-import { getProgramProgress } from '../lib/programs'
+import { getProgramProgress, getProgramRequirementDisplayName } from '../lib/programs'
 import { getEffectiveCompletedCourses } from '../lib/studentRecords'
 import { isFinishedByDate } from '../lib/terms'
 import { useStudentStore } from '../stores/useStudentStore'
@@ -280,7 +280,9 @@ export function ProgramsPage() {
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <h3 className="font-semibold">{requirementProgress.requirement.name}</h3>
+                      <h3 className="font-semibold">
+                        {getProgramRequirementDisplayName(requirementProgress.requirement.name)}
+                      </h3>
                       <p className="mt-1 text-sm text-slate-600">
                         Choose {requirementProgress.requiredCount} of{' '}
                         {requirementProgress.requirement.courses.length}

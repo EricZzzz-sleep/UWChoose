@@ -29,6 +29,21 @@ export type ProgramProgress = {
   projectedPercentage: number
 }
 
+export function getProgramRequirementDisplayName(requirementName: string): string {
+  const courseCodeMatch = requirementName.match(/\b[A-Z]{2,8}\s*\d{2,3}[A-Z]?\b/)
+
+  if (!courseCodeMatch || courseCodeMatch.index === undefined) {
+    return requirementName
+  }
+
+  const displayName = requirementName
+    .slice(0, courseCodeMatch.index)
+    .replace(/\s*[-,:;]\s*$/, '')
+    .trim()
+
+  return displayName || requirementName
+}
+
 function hasCompleted(courseCode: string, completedCourses: CompletedCourse[]): boolean {
   const normalizedCode = normalizeCourseCode(courseCode)
 

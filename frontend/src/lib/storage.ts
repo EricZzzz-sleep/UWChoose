@@ -1,4 +1,5 @@
 export const studentStorageKey = 'uwchoose.student'
+export const localStudentDraftStorageKey = 'uwchoose.local-student-draft'
 
 export function clearLegacyStudentStorage(): void {
   if (typeof window === 'undefined') {

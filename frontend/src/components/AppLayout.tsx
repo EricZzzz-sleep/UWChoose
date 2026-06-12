@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import { useEffect, useRef } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import logo from '../assets/uwchoose_logo.png'
 import { getAccountPlan, saveAccountPlan } from '../lib/authApi'
@@ -19,36 +18,9 @@ const navItems = [
 
 function AuthControls() {
   const user = useAuthStore((state) => state.user)
-  const isHydrating = useAuthStore((state) => state.isHydrating)
-  const message = useAuthStore((state) => state.message)
-  const requestVerificationCode = useAuthStore((state) => state.requestVerificationCode)
-  const verifyVerificationCode = useAuthStore((state) => state.verifyVerificationCode)
   const signOut = useAuthStore((state) => state.signOut)
-  const clearMessage = useAuthStore((state) => state.clearMessage)
   const resetPlan = useStudentStore((state) => state.resetPlan)
   const resetUserProfile = useStudentStore((state) => state.resetUserProfile)
-  const [isOpen, setIsOpen] = useState(false)
-  const [hasRequestedCode, setHasRequestedCode] = useState(false)
-  const [email, setEmail] = useState('')
-  const [code, setCode] = useState('')
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    try {
-      if (hasRequestedCode) {
-        await verifyVerificationCode(email, code)
-        setIsOpen(false)
-        setHasRequestedCode(false)
-        setCode('')
-      } else {
-        await requestVerificationCode(email)
-        setHasRequestedCode(true)
-      }
-    } catch {
-      // Message is stored in auth state for display.
-    }
-  }
 
   if (user) {
     return (
@@ -77,66 +49,13 @@ function AuthControls() {
   }
 
   return (
-    <div className="relative flex flex-wrap justify-end gap-2">
-      <button
+    <div className="flex flex-wrap justify-end gap-2">
+      <NavLink
         className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-        type="button"
-        onClick={() => {
-          clearMessage()
-          setIsOpen(true)
-        }}
+        to="/signin"
       >
         Sign in
-      </button>
-
-      {isOpen ? (
-        <form
-          className="absolute right-0 top-12 z-20 grid w-[min(20rem,calc(100vw-2rem))] gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
-          onSubmit={(event) => {
-            void handleSubmit(event)
-          }}
-        >
-          <h2 className="font-semibold">Waterloo sign in</h2>
-          <input
-            className="h-10 rounded-xl border border-slate-300 px-3 text-sm"
-            placeholder="username@uwaterloo.ca"
-            type="email"
-            value={email}
-            onChange={(event) => {
-              setEmail(event.target.value)
-              setHasRequestedCode(false)
-              setCode('')
-            }}
-          />
-          {hasRequestedCode ? (
-            <input
-              className="h-10 rounded-xl border border-slate-300 px-3 text-sm"
-              inputMode="numeric"
-              maxLength={6}
-              pattern="[0-9]{6}"
-              placeholder="6-digit code"
-              value={code}
-              onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-            />
-          ) : null}
-          <div className="flex justify-end gap-2">
-            <button
-              className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              type="button"
-              onClick={() => setIsOpen(false)}
-            >
-              Cancel
-            </button>
-            <button
-              className="rounded-xl bg-slate-200 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-slate-300 disabled:opacity-60"
-              disabled={isHydrating}
-            >
-              {hasRequestedCode ? 'Verify code' : 'Send code'}
-            </button>
-          </div>
-          {message ? <p className="text-sm text-rose-700">{message}</p> : null}
-        </form>
-      ) : null}
+      </NavLink>
     </div>
   )
 }

@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { normalizeCourseCode } from '../lib/courseCodes'
+import { loadLocalStudentDraft, saveLocalStudentDraft } from '../lib/localStudentDraft'
+import { localStudentDraftStorageKey } from '../lib/storage'
 import { getCurrentAcademicTerm } from '../lib/terms'
 import type {
   CompletedCourse,
@@ -10,6 +12,7 @@ import type {
 } from '../types/student'
 
 const defaultCurrentTerm = getCurrentAcademicTerm()
+const localDraft = loadLocalStudentDraft(localStudentDraftStorageKey)
 
 function parseTermTaken(termTaken: string | undefined, fallback: CurrentTerm): CurrentTerm {
   const match = termTaken?.trim().match(/^(Fall|Winter|Spring)\s+(\d{4})$/i)
@@ -149,11 +152,12 @@ type StudentState = {
 }
 
 export const useStudentStore = create<StudentState>()((set, get) => ({
-      completedCourses: [] as CompletedCourse[],
-      plannedTerms: [] as PlannedTerm[],
-      prerequisiteOverrides: [] as string[],
-      userProfile: {},
-      currentTerm: defaultCurrentTerm,
+      completedCourses: localDraft?.plan.completedCourses ?? ([] as CompletedCourse[]),
+      plannedTerms: localDraft?.plan.plannedTerms ?? ([] as PlannedTerm[]),
+      prerequisiteOverrides: localDraft?.plan.prerequisiteOverrides ?? ([] as string[]),
+      selectedProgramId: localDraft?.plan.selectedProgramId,
+      userProfile: localDraft?.profile ?? {},
+      currentTerm: localDraft?.plan.currentTerm ?? defaultCurrentTerm,
 
       addCompletedCourse: (course) =>
         set((state) => {
@@ -415,3 +419,10 @@ export const useStudentStore = create<StudentState>()((set, get) => ({
           currentTerm: { ...defaultCurrentTerm },
         }),
     }))
+
+useStudentStore.subscribe((state) => {
+  saveLocalStudentDraft(localStudentDraftStorageKey, {
+    plan: state.exportPlan(),
+    profile: state.userProfile,
+  })
+})
