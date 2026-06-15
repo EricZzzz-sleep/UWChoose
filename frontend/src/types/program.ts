@@ -28,6 +28,7 @@ export type ProgramRequirement = {
   type: 'allOf' | 'chooseN'
   category?: 'core' | 'communication' | 'elective' | 'program'
   courses: string[]
+  notes?: string[]
   requiredCount?: number
 }
 

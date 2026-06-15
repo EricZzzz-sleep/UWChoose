@@ -7,6 +7,7 @@ export type Course = {
   level: number
   description?: string
   prerequisiteRawText?: string
+  prerequisiteNotes?: string[]
   prerequisite?: Prerequisite
   antirequisiteRawText?: string
   antirequisites?: string[]

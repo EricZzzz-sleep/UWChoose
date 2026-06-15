@@ -1,6 +1,4 @@
 import { pathToFileURL } from 'node:url'
-import * as cheerio from 'cheerio'
-import type { Element } from 'domhandler'
 import { courses as localCourses } from '../src/data/courses'
 import { normalizeCourseCode } from '../src/lib/courseCodes'
 import {
@@ -11,6 +9,10 @@ import {
   type CourseGraphEdge,
 } from '../src/lib/courseGraph'
 import type { Course, Prerequisite } from '../src/types/course'
+import {
+  parseAcademicCalendarRequirementHtml,
+  type ParsedAcademicCalendarRequirement,
+} from './academicCalendarRequirements'
 
 const catalogId = '67e557ed6ed2fe2bd3a38956'
 const catalogBaseUrl = 'https://uwaterloocm.kuali.co/api/v1/catalog'
@@ -32,11 +34,6 @@ type KualiCourseDetail = {
     name?: string
   }
   title?: string
-}
-
-type ParsedPrerequisite = {
-  nonCourseConditionCount: number
-  prerequisite?: Prerequisite
 }
 
 type AuditMismatch = {
@@ -83,204 +80,9 @@ async function mapWithConcurrency<T, U>(
   return results
 }
 
-function getMinimumGrade(text: string): number | undefined {
-  return Number(text.match(/minimum grade of\s+(\d+)%/i)?.[1]) || undefined
-}
-
-function getRequiredCount(text: string): number | undefined {
-  const normalized = text.replace(/\s+/g, ' ')
-  const completeMatch = normalized.match(/Complete\s+(\d+)\s+of\s+the\s+following/i)
-  const atLeastMatch = normalized.match(/at\s+least\s+(\d+)\s+of\s+the\s+following/i)
-
-  return Number(completeMatch?.[1] ?? atLeastMatch?.[1]) || undefined
-}
-
-function getCourseRequirementType(
-  text: string,
-  requirements: Prerequisite[],
-): Prerequisite | undefined {
-  if (requirements.length === 0) {
-    return undefined
-  }
-
-  if (requirements.length === 1) {
-    return requirements[0]
-  }
-
-  const requiredCount = getRequiredCount(text)
-
-  if (requiredCount && requiredCount > 1) {
-    return {
-      type: 'chooseN',
-      requiredCount: Math.min(requiredCount, requirements.length),
-      requirements,
-    }
-  }
-
-  if (requiredCount === 1 || /one\s+of|any\s+of|at\s+least\s+1/i.test(text)) {
-    return {
-      type: 'anyOf',
-      requirements,
-    }
-  }
-
-  return {
-    type: 'allOf',
-    requirements,
-  }
-}
-
-function simplifyRequirement(requirement: Prerequisite | undefined): Prerequisite | undefined {
-  if (!requirement || requirement.type === 'course') {
-    return requirement
-  }
-
-  const requirements = requirement.requirements
-    .map(simplifyRequirement)
-    .filter((item): item is Prerequisite => Boolean(item))
-
-  if (requirements.length === 0) {
-    return undefined
-  }
-
-  if (requirements.length === 1) {
-    return requirements[0]
-  }
-
-  if (requirement.type === 'chooseN') {
-    return {
-      ...requirement,
-      requiredCount: Math.min(requirement.requiredCount, requirements.length),
-      requirements,
-    }
-  }
-
-  return {
-    ...requirement,
-    requirements,
-  }
-}
-
-function parseCourseLinksFromNode($: cheerio.CheerioAPI, node: Element) {
-  const links = new Map<string, { code: string }>()
-
-  $(node)
-    .find('a[href*="#/courses/view/"]')
-    .each((_, link) => {
-      const code = normalizeCourseCode($(link).text())
-
-      if (code) {
-        links.set(code, { code })
-      }
-    })
-
-  return [...links.values()]
-}
-
-function parseLeafRequirement($: cheerio.CheerioAPI, node: cheerio.Cheerio<Element>) {
-  const result = node.children('div[data-test$="-result"]').first()
-  const resultNode = result.get(0)
-
-  if (!resultNode) {
-    return {
-      nonCourseConditionCount: 0,
-      prerequisite: undefined,
-    }
-  }
-
-  const text = result.text().replace(/\s+/g, ' ').trim()
-  const links = parseCourseLinksFromNode($, resultNode)
-
-  if (links.length === 0) {
-    return {
-      nonCourseConditionCount: text ? 1 : 0,
-      prerequisite: undefined,
-    }
-  }
-
-  const minGrade = getMinimumGrade(text)
-  const requirements: Prerequisite[] = links.map((link) => ({
-    type: 'course',
-    courseCode: link.code,
-    ...(minGrade === undefined ? {} : { minGrade }),
-  }))
-
-  return {
-    nonCourseConditionCount: 0,
-    prerequisite: getCourseRequirementType(text, requirements),
-  }
-}
-
-function parseRequirementElement(
-  $: cheerio.CheerioAPI,
-  element: Element,
-): ParsedPrerequisite {
-  const node = $(element)
-
-  if ((node.attr('data-test') ?? '').startsWith('ruleView-')) {
-    return parseLeafRequirement($, node)
-  }
-
-  const groupLabel = node.children('span').first().text().replace(/\s+/g, ' ').trim()
-  const children =
-    /Complete\s+(all|\d+)/i.test(groupLabel) ?
-      node.children('ul').first().children('li, div, ul').toArray()
-    : node.children('li, div, ul').toArray()
-  const parsedChildren = children.map((child) => parseRequirementElement($, child))
-  const requirements = parsedChildren
-    .map((item) => item.prerequisite)
-    .filter((item): item is Prerequisite => Boolean(item))
-  const nonCourseConditionCount = parsedChildren.reduce(
-    (total, item) => total + item.nonCourseConditionCount,
-    0,
-  )
-
-  if (/Complete\s+(all|\d+)/i.test(groupLabel)) {
-    return {
-      nonCourseConditionCount,
-      prerequisite: simplifyRequirement(getCourseRequirementType(groupLabel, requirements)),
-    }
-  }
-
-  return {
-    nonCourseConditionCount,
-    prerequisite: simplifyRequirement({
-      type: 'allOf',
-      requirements,
-    }),
-  }
-}
-
-export function parseAcademicCalendarPrerequisiteHtml(
+export const parseAcademicCalendarPrerequisiteHtml: (
   value: string | undefined,
-): ParsedPrerequisite {
-  if (!value) {
-    return {
-      nonCourseConditionCount: 0,
-      prerequisite: undefined,
-    }
-  }
-
-  const $ = cheerio.load(value)
-  const parsedRequirements = $('body')
-    .children()
-    .toArray()
-    .map((node) => parseRequirementElement($, node as Element))
-  const requirements = parsedRequirements
-    .map((item) => item.prerequisite)
-    .filter((item): item is Prerequisite => Boolean(item))
-
-  return {
-    nonCourseConditionCount: parsedRequirements.reduce(
-      (total, item) => total + item.nonCourseConditionCount,
-      0,
-    ),
-    prerequisite: simplifyRequirement({
-      type: 'allOf',
-      requirements,
-    }),
-  }
-}
+) => ParsedAcademicCalendarRequirement = parseAcademicCalendarRequirementHtml
 
 function normalizeRequirementForComparison(
   prerequisite: Prerequisite | undefined,

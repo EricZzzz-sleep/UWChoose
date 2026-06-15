@@ -1,10 +1,12 @@
 import { writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import * as cheerio from 'cheerio'
 import type { Element } from 'domhandler'
 import { degrees } from '../src/data/programs'
-import type { Course, Prerequisite } from '../src/types/course'
+import type { Course } from '../src/types/course'
 import type { Program, ProgramCategory, ProgramRequirement } from '../src/types/program'
+import { parseAcademicCalendarRequirementHtml } from './academicCalendarRequirements'
 
 const catalogId = '67e557ed6ed2fe2bd3a38956'
 const catalogBaseUrl = 'https://uwaterloocm.kuali.co/api/v1/catalog'
@@ -55,6 +57,30 @@ type CourseLink = {
   code: string
   courseId: string
   name: string
+}
+
+type ImportStats = {
+  missingCourseDetails: string[]
+  programRequirementsWithoutCourses: Array<{ programTitle: string; text: string }>
+  skippedConditions: Array<{ courseCode: string; conditions: string[] }>
+  unknownProgramCategories: Array<{ code?: string; credentialType?: string; title: string }>
+}
+
+function createImportStats(): ImportStats {
+  return {
+    missingCourseDetails: [],
+    programRequirementsWithoutCourses: [],
+    skippedConditions: [],
+    unknownProgramCategories: [],
+  }
+}
+
+function recordSkippedCondition(stats: ImportStats, courseCode: string, conditions: string[]) {
+  if (conditions.length === 0) {
+    return
+  }
+
+  stats.skippedConditions.push({ courseCode, conditions })
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -140,7 +166,10 @@ function getCourseLevel(code: string): number {
   return Number(code.match(/\d/)?.[0] ?? 0) * 100
 }
 
-function getProgramCategory(program: KualiProgramDetail): ProgramCategory {
+export function getProgramCategory(
+  program: KualiProgramDetail,
+  stats?: ImportStats,
+): ProgramCategory {
   const credentialType = program.undergraduateCredentialType?.name
   const code = program.code ?? ''
   const title = program.title
@@ -167,6 +196,14 @@ function getProgramCategory(program: KualiProgramDetail): ProgramCategory {
 
   if (title.includes('Double Degree') || code.includes('Double Degree')) {
     return 'double-degree'
+  }
+
+  if (stats && credentialType !== 'Major') {
+    stats.unknownProgramCategories.push({
+      code: program.code,
+      credentialType,
+      title,
+    })
   }
 
   return 'major'
@@ -207,72 +244,6 @@ function getRequirementType(text: string): Pick<ProgramRequirement, 'requiredCou
 
   return {
     type: 'allOf',
-  }
-}
-
-function getCourseRequirementType(
-  text: string,
-  requirements: Prerequisite[],
-): Prerequisite | undefined {
-  if (requirements.length === 0) {
-    return undefined
-  }
-
-  if (requirements.length === 1) {
-    return requirements[0]
-  }
-
-  const requiredCount = getRequiredCount(text)
-
-  if (requiredCount && requiredCount > 1) {
-    return {
-      type: 'chooseN',
-      requiredCount: Math.min(requiredCount, requirements.length),
-      requirements,
-    }
-  }
-
-  if (requiredCount === 1 || /one\s+of|any\s+of|at\s+least\s+1/i.test(text)) {
-    return {
-      type: 'anyOf',
-      requirements,
-    }
-  }
-
-  return {
-    type: 'allOf',
-    requirements,
-  }
-}
-
-function simplifyRequirement(requirement: Prerequisite | undefined): Prerequisite | undefined {
-  if (!requirement || requirement.type === 'course') {
-    return requirement
-  }
-
-  const requirements = requirement.requirements
-    .map(simplifyRequirement)
-    .filter((item): item is Prerequisite => Boolean(item))
-
-  if (requirements.length === 0) {
-    return undefined
-  }
-
-  if (requirements.length === 1) {
-    return requirements[0]
-  }
-
-  if (requirement.type === 'chooseN') {
-    return {
-      ...requirement,
-      requiredCount: Math.min(requirement.requiredCount, requirements.length),
-      requirements,
-    }
-  }
-
-  return {
-    ...requirement,
-    requirements,
   }
 }
 
@@ -350,94 +321,6 @@ function getCourseCodesFromHtml(value: string | undefined): string[] | undefined
   return codes.size > 0 ? [...codes].sort() : undefined
 }
 
-function getMinimumGrade(text: string): number | undefined {
-  return Number(text.match(/minimum grade of\s+(\d+)%/i)?.[1]) || undefined
-}
-
-function getDirectChildRequirements(
-  $: cheerio.CheerioAPI,
-  node: cheerio.Cheerio<Element>,
-): Prerequisite[] {
-  return node
-    .children('li, div, ul')
-    .toArray()
-    .map((child) => parseRequirementElement($, child))
-    .filter((item): item is Prerequisite => Boolean(item))
-}
-
-function parseLeafRequirement($: cheerio.CheerioAPI, node: cheerio.Cheerio<Element>) {
-  const result = node.children('div[data-test$="-result"]').first()
-  const resultNode = result.get(0)
-
-  if (!resultNode) {
-    return undefined
-  }
-
-  const links = parseCourseLinksFromNode($, resultNode)
-
-  if (links.length === 0) {
-    return undefined
-  }
-
-  const text = result.text().replace(/\s+/g, ' ').trim()
-  const minGrade = getMinimumGrade(text)
-  const requirements: Prerequisite[] = links.map((link) => ({
-    type: 'course',
-    courseCode: link.code,
-    ...(minGrade === undefined ? {} : { minGrade }),
-  }))
-
-  return getCourseRequirementType(text, requirements)
-}
-
-function parseRequirementElement(
-  $: cheerio.CheerioAPI,
-  element: Element,
-): Prerequisite | undefined {
-  const node = $(element)
-
-  if ((node.attr('data-test') ?? '').startsWith('ruleView-')) {
-    return parseLeafRequirement($, node)
-  }
-
-  const groupLabel = node.children('span').first().text().replace(/\s+/g, ' ').trim()
-
-  if (/Complete\s+(all|\d+)/i.test(groupLabel)) {
-    const childRequirements = node
-      .children('ul')
-      .first()
-      .children('li, div, ul')
-      .toArray()
-      .map((child) => parseRequirementElement($, child))
-      .filter((item): item is Prerequisite => Boolean(item))
-
-    return simplifyRequirement(getCourseRequirementType(groupLabel, childRequirements))
-  }
-
-  return simplifyRequirement({
-    type: 'allOf',
-    requirements: getDirectChildRequirements($, node),
-  })
-}
-
-function parsePrerequisiteHtml(value: string | undefined): Prerequisite | undefined {
-  if (!value) {
-    return undefined
-  }
-
-  const $ = cheerio.load(value)
-  const requirements = $('body')
-    .children()
-    .toArray()
-    .map((node) => parseRequirementElement($, node as Element))
-    .filter((item): item is Prerequisite => Boolean(item))
-
-  return simplifyRequirement({
-    type: 'allOf',
-    requirements,
-  })
-}
-
 function parseProgramCodes(value: string | undefined): string[] | undefined {
   if (!value) {
     return undefined
@@ -457,10 +340,77 @@ function parseProgramCodes(value: string | undefined): string[] | undefined {
   return codes.size > 0 ? [...codes] : undefined
 }
 
-function parseRequirements(
+function getNodeText(node: cheerio.Cheerio<Element>): string {
+  return node.text().replace(/\s+/g, ' ').trim()
+}
+
+function getUniqueCourseLinks(courses: CourseLink[]): CourseLink[] {
+  return [...new Map(courses.map((course) => [course.code, course])).values()]
+}
+
+function isCompletionGroup(label: string): boolean {
+  return /Complete\s+(all|\d+)/i.test(label)
+}
+
+function buildProgramRequirementFromCourses(
+  courses: CourseLink[],
+  rawName: string,
+  programId: string,
+  requirements: ProgramRequirement[],
+  requirementIds: Set<string>,
+  notes?: string[],
+): ProgramRequirement {
+  const uniqueCourses = getUniqueCourseLinks(courses)
+  const requirementShape = getRequirementType(rawName)
+  const baseId = `${programId}-${requirements.length + 1}-${slugify(rawName).slice(0, 70)}`
+  const id = getUniqueId(baseId, requirementIds)
+  const requiredCount =
+    requirementShape.type === 'chooseN' ?
+      Math.min(requirementShape.requiredCount ?? uniqueCourses.length, uniqueCourses.length)
+    : undefined
+
+  return {
+    id,
+    name: rawName.slice(0, 180),
+    category: 'program',
+    courses: uniqueCourses.map((course) => course.code),
+    ...(notes && notes.length > 0 ? { notes } : {}),
+    ...(requirementShape.type === 'chooseN' ? { type: 'chooseN', requiredCount } : requirementShape),
+  }
+}
+
+function getProgramRequirementNodes($: cheerio.CheerioAPI): Element[] {
+  const resultNodes = $('li[data-test^="ruleView-"]').toArray()
+  const groupedNodes = $('li')
+    .toArray()
+    .filter((node) => {
+      const item = $(node)
+      const label = item.children('span').first().text().replace(/\s+/g, ' ').trim()
+
+      return isCompletionGroup(label) && parseCourseLinksFromNode($, node).length > 0
+    })
+
+  if (groupedNodes.length > 0) {
+    const groupedDescendants = new Set<Element>(
+      groupedNodes.flatMap((node) =>
+        $(node).find('li[data-test^="ruleView-"]').toArray() as Element[],
+      ),
+    )
+
+    return [
+      ...groupedNodes,
+      ...resultNodes.filter((node) => !groupedDescendants.has(node)),
+    ]
+  }
+
+  return resultNodes
+}
+
+export function parseRequirements(
   program: KualiProgramDetail,
   courseLinksByCode: Map<string, CourseLink>,
   programId: string,
+  stats?: ImportStats,
 ): ProgramRequirement[] {
   const html = program.courseRequirementsNoUnits ?? program.requirements
 
@@ -472,28 +422,38 @@ function parseRequirements(
   const requirements: ProgramRequirement[] = []
   const requirementIds = new Set<string>()
 
-  $('li[data-test^="ruleView-"]').each((_, node) => {
+  getProgramRequirementNodes($).forEach((node) => {
+    const item = $(node)
     const courses = parseCourseLinksFromNode($, node)
+    const result = item.children('div[data-test$="-result"]').first()
+    const groupLabel = item.children('span').first().text().replace(/\s+/g, ' ').trim()
+    const rawName = getNodeText(result.length > 0 ? result : item.children('span').first())
+    const name = rawName || groupLabel || getNodeText(item)
 
     if (courses.length === 0) {
+      if (stats) {
+        stats.programRequirementsWithoutCourses.push({
+          programTitle: program.title,
+          text: name,
+        })
+      }
       return
     }
 
     courses.forEach((course) => courseLinksByCode.set(course.code, course))
 
-    const result = $(node).children('div[data-test$="-result"]').first()
-    const rawName = result.text().replace(/\s+/g, ' ').trim()
-    const requirementShape = getRequirementType(rawName)
-    const baseId = `${programId}-${requirements.length + 1}-${slugify(rawName).slice(0, 70)}`
-    const id = getUniqueId(baseId, requirementIds)
-
-    requirements.push({
-      id,
-      name: rawName.slice(0, 180),
-      category: 'program',
-      courses: courses.map((course) => course.code),
-      ...requirementShape,
-    })
+    requirements.push(
+      buildProgramRequirementFromCourses(
+        courses,
+        name,
+        programId,
+        requirements,
+        requirementIds,
+        courses.length === getUniqueCourseLinks(courses).length ?
+          undefined
+        : ['Duplicate course links were collapsed during import.'],
+      ),
+    )
   })
 
   return requirements
@@ -503,6 +463,7 @@ function buildProgram(
   program: KualiProgramDetail,
   courseLinksByCode: Map<string, CourseLink>,
   id: string,
+  stats: ImportStats,
 ): Program {
   const sourceUrl = `${catalogPageUrl}#/programs/${program.pid}`
 
@@ -510,7 +471,7 @@ function buildProgram(
     id,
     name: program.title,
     degreeIds: getDegreeIds(program),
-    category: getProgramCategory(program),
+    category: getProgramCategory(program, stats),
     code: program.code,
     credentialType: program.undergraduateCredentialType?.name,
     faculty: program.facultyCalendarDisplay?.name,
@@ -518,14 +479,17 @@ function buildProgram(
     sourceId: program.id,
     sourceUrl,
     parentProgramCodes: parseProgramCodes(program.specializationIsAvailableForStudentsInTheFollowingMajorsRules),
-    requirements: parseRequirements(program, courseLinksByCode, id),
+    requirements: parseRequirements(program, courseLinksByCode, id, stats),
   }
 }
 
-function buildCourseFromLink(link: CourseLink, detail?: KualiCourseDetail): Course {
+function buildCourseFromLink(link: CourseLink, detail: KualiCourseDetail | undefined, stats: ImportStats): Course {
   const antirequisites = getCourseCodesFromHtml(detail?.antirequisites)?.filter(
     (courseCode) => courseCode !== link.code,
   )
+  const parsedPrerequisite = parseAcademicCalendarRequirementHtml(detail?.prerequisites)
+
+  recordSkippedCondition(stats, link.code, parsedPrerequisite.nonCourseConditions)
 
   return {
     code: link.code,
@@ -534,7 +498,11 @@ function buildCourseFromLink(link: CourseLink, detail?: KualiCourseDetail): Cour
     level: getCourseLevel(link.code),
     description: detail?.description,
     prerequisiteRawText: stripHtml(detail?.prerequisites),
-    prerequisite: parsePrerequisiteHtml(detail?.prerequisites),
+    prerequisiteNotes:
+      parsedPrerequisite.nonCourseConditions.length > 0 ?
+        parsedPrerequisite.nonCourseConditions
+      : undefined,
+    prerequisite: parsedPrerequisite.prerequisite,
     antirequisiteRawText: stripHtml(detail?.antirequisites),
     antirequisites: antirequisites && antirequisites.length > 0 ? antirequisites : undefined,
   }
@@ -546,7 +514,56 @@ function formatTsValue(value: unknown): string {
     .replace(/"/g, '"')
 }
 
+function printImportStats(stats: ImportStats) {
+  const skippedConditionCount = stats.skippedConditions.reduce(
+    (total, item) => total + item.conditions.length,
+    0,
+  )
+
+  if (
+    stats.missingCourseDetails.length === 0 &&
+    stats.programRequirementsWithoutCourses.length === 0 &&
+    skippedConditionCount === 0 &&
+    stats.unknownProgramCategories.length === 0
+  ) {
+    return
+  }
+
+  console.warn('Import warnings:')
+
+  if (stats.missingCourseDetails.length > 0) {
+    console.warn(`- Missing detail fetches: ${stats.missingCourseDetails.length}`)
+    stats.missingCourseDetails.slice(0, 10).forEach((courseCode) => console.warn(`  - ${courseCode}`))
+  }
+
+  if (skippedConditionCount > 0) {
+    console.warn(`- Non-course prerequisite conditions preserved as notes: ${skippedConditionCount}`)
+    stats.skippedConditions.slice(0, 10).forEach((item) => {
+      console.warn(`  - ${item.courseCode}: ${item.conditions.join(' | ')}`)
+    })
+  }
+
+  if (stats.programRequirementsWithoutCourses.length > 0) {
+    console.warn(
+      `- Program requirement rules without detected courses: ${stats.programRequirementsWithoutCourses.length}`,
+    )
+    stats.programRequirementsWithoutCourses.slice(0, 10).forEach((item) => {
+      console.warn(`  - ${item.programTitle}: ${item.text}`)
+    })
+  }
+
+  if (stats.unknownProgramCategories.length > 0) {
+    console.warn(`- Programs defaulted to major category: ${stats.unknownProgramCategories.length}`)
+    stats.unknownProgramCategories.slice(0, 10).forEach((item) => {
+      console.warn(
+        `  - ${item.title} (${item.code ?? 'no code'}, ${item.credentialType ?? 'no credential type'})`,
+      )
+    })
+  }
+}
+
 async function main() {
+  const stats = createImportStats()
   const summaries = await fetchJson<KualiProgramSummary[]>(`${catalogBaseUrl}/programs/${catalogId}`)
   const courseSummaries = await fetchJson<KualiCourseSummary[]>(`${catalogBaseUrl}/courses/${catalogId}`)
   const details = await Promise.all(
@@ -563,7 +580,7 @@ async function main() {
     const baseId = slugify(program.title)
     const id = getUniqueId(program.code ? slugify(`${program.code} ${program.title}`) : baseId, programIds)
 
-    return buildProgram(program, courseLinksByCode, id)
+    return buildProgram(program, courseLinksByCode, id, stats)
   })
   courseSummaries
     .filter((course) => targetCourseSubjects.has(course.subjectCode?.name ?? ''))
@@ -587,11 +604,14 @@ async function main() {
         await fetchJson<KualiCourseDetail>(`${catalogBaseUrl}/course/byId/${catalogId}/${link.courseId}`),
       )
     } catch (error) {
+      stats.missingCourseDetails.push(link.code)
       console.warn(`Could not fetch ${link.code}: ${error instanceof Error ? error.message : String(error)}`)
     }
   })
 
-  const courses = catalogCourseLinks.map((link) => buildCourseFromLink(link, courseDetails.get(link.code)))
+  const courses = catalogCourseLinks.map((link) =>
+    buildCourseFromLink(link, courseDetails.get(link.code), stats),
+  )
 
   const programsSource = `import type { Degree, Program } from "../types/program";
 
@@ -610,6 +630,9 @@ export const courses: Course[] = ${formatTsValue(courses)};
 
   console.log(`Imported ${programs.length} Faculty of Mathematics programs.`)
   console.log(`Imported ${courses.length} required and target-subject courses.`)
+  printImportStats(stats)
 }
 
-await main()
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main()
+}
